@@ -1,0 +1,31 @@
+--- a/src/lj_lex.c
++++ b/src/lj_lex.c
+@@ -378,6 +378,28 @@
+     case '\f':
+       lex_next(ls);
+       continue;
++#if LUAJIT_GMOD_SYNTAX
++    case '/':  /* GMod: C-style comments, exactly as GMod's LuaJIT 2.1.0-beta3 lexer. */
++      lex_next(ls);
++      if (ls->c == '/') {  /* "//" to the end of the line. */
++	while (!lex_iseol(ls) && ls->c != LEX_EOF)
++	  lex_next(ls);
++	continue;
++      }
++      if (ls->c != '*') return '/';
++      do {  /* "/" "*" ... "*" "/"; an unterminated one ends quietly at the end of the input. */
++	if (lex_iseol(ls)) {
++	  lex_newline(ls);
++	} else {
++	  lex_next(ls);
++	}
++	if (ls->c == '*') {
++	  do { lex_next(ls); } while (ls->c == '*');
++	  if (ls->c == '/') { lex_next(ls); break; }
++	}
++      } while (ls->c != LEX_EOF);
++      continue;
++#endif
+     case '-':
+       lex_next(ls);
+       if (ls->c != '-') {

@@ -1,0 +1,37 @@
+#version 450
+// PT-RT (analysis/43): one step of the edge-aware a-trous filter over the accumulated bounce light (tools/pt_ref.c's, on the GPU): a 5x5
+// B3-spline kernel at a spacing of `step` pixels, each tap weighted down by the difference in eye distance (edges) and in brightness.
+// The brightness stop widens for pixels with little history (a: frames accumulated; 1 after a disocclusion or fast motion: one noisy
+// sample): sigma x (1 + 4 / frames), so fresh pixels blur toward their surroundings and converged ones keep their detail.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 0) uniform sampler2D src;
+layout(binding = 1) uniform sampler2D dist;
+layout(binding = 2, rgba16f) uniform writeonly image2D dst;
+layout(binding = 3) uniform sampler2D nrm;   // analysis/46 item 3: the trace's normals (0: none); taps facing away weigh less (SVGF: (n.nq)^32)
+layout(push_constant) uniform P { int step; float sigma_l; } pc;
+const float k[3] = float[3](0.375, 0.25, 0.0625);
+float lum(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy), sz = imageSize(dst);
+    if (px.x >= sz.x || px.y >= sz.y) return;
+    vec4 c = texelFetch(src, px, 0);
+    float dc = texelFetch(dist, px, 0).r;
+    vec3 nc = texelFetch(nrm, px, 0).rgb;
+    if (dc > 1e8) { imageStore(dst, px, c); return; }
+    float lc = lum(c.rgb), ws = 0.0;
+    float sl = pc.sigma_l < 0.0 ? -pc.sigma_l : pc.sigma_l * (1.0 + 4.0 / max(c.a, 1.0));   // negative: the old, fixed stop (PHOTON_PTRT_FRESHBLUR=0)
+    vec3 sum = vec3(0);
+    for (int j = -2; j <= 2; j++)
+        for (int i = -2; i <= 2; i++) {
+            ivec2 q = clamp(px + ivec2(i, j) * pc.step, ivec2(0), sz - 1);
+            float dq = texelFetch(dist, q, 0).r;
+            if (dq > 1e8) continue;
+            vec3 cq = texelFetch(src, q, 0).rgb;
+            float wn = pow(max(dot(nc, texelFetch(nrm, q, 0).rgb), 0.0), 32.0);
+            float w = wn * k[abs(i)] * k[abs(j)] * exp(-abs(dq - dc) / (0.02 * dc * float(pc.step) + 1.0))
+                    * (pc.sigma_l == 0.0 ? 1.0 : exp(-abs(lum(cq) - lc) / (sl * (lc + lum(cq)) * 0.5 + 1e-3)));   // 0: no brightness stop
+                    // (the lamps' chain: a brightness stop on their few-frame, noisy light keeps the darker majority and darkened rooms)
+            sum += w * cq; ws += w;
+        }
+    imageStore(dst, px, vec4(ws > 0.0 ? sum / ws : c.rgb, c.a));
+}

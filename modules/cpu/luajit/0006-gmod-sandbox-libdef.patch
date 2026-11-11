@@ -1,0 +1,64 @@
+diff -ruN lja/src/lib_base.c ljb/src/lib_base.c
+--- a/src/lib_base.c	2026-11-09 05:57:15.000000000 -0300
++++ b/src/lib_base.c	2026-11-09 19:50:38.769341985 -0300
+@@ -383,7 +383,9 @@
+   }
+ }
+ 
+-LJLIB_CF(loadfile)
++/* GMod: not in its sandbox; kept out of the library definition (buildvm reads the library markers in the source, not the preprocessor), so _G has
++** GMod's size and pairs() order. */
++static LJ_AINLINE int lj_cf_loadfile(lua_State *L)
+ {
+   GCstr *fname = lj_lib_optstr(L, 1);
+   GCstr *mode = lj_lib_optstr(L, 2);
+@@ -413,7 +415,7 @@
+   }
+ }
+ 
+-LJLIB_CF(load)
++static LJ_AINLINE int lj_cf_load(lua_State *L)
+ {
+   GCstr *name = lj_lib_optstr(L, 2);
+   GCstr *mode = lj_lib_optstr(L, 3);
+@@ -444,12 +446,12 @@
+   return load_aux(L, status, 4);
+ }
+ 
+-LJLIB_CF(loadstring)
++static LJ_AINLINE int lj_cf_loadstring(lua_State *L)
+ {
+   return lj_cf_load(L);
+ }
+ 
+-LJLIB_CF(dofile)
++static LJ_AINLINE int lj_cf_dofile(lua_State *L)
+ {
+   GCstr *fname = lj_lib_optstr(L, 1);
+   setnilV(L->top);
+diff -ruN lja/src/lib_jit.c ljb/src/lib_jit.c
+--- a/src/lib_jit.c	2026-11-09 19:50:38.743518467 -0300
++++ b/src/lib_jit.c	2026-11-09 19:50:38.769490536 -0300
+@@ -113,7 +113,8 @@
+ #endif
+ }
+ 
+-LJLIB_CF(jit_security)
++/* GMod (2.1.0-beta3) has no jit.security; out of the library definition as above */
++static LJ_AINLINE int lj_cf_jit_security(lua_State *L)
+ {
+   int idx = lj_lib_checkopt(L, 1, -1, LJ_SECURITY_MODESTRING);
+   setintV(L->top++, ((LJ_SECURITY_MODE >> (2*idx)) & 3));
+diff -ruN lja/src/lib_package.c ljb/src/lib_package.c
+--- a/src/lib_package.c	2026-11-09 05:57:15.000000000 -0300
++++ b/src/lib_package.c	2026-11-09 19:53:29.871874104 -0300
+@@ -577,7 +577,9 @@
+ 
+ static const luaL_Reg package_global[] = {
+   { "module",	lj_cf_package_module },
++#if !LUAJIT_GMOD_SYNTAX  /* GMod: no require in its sandbox (its own comes from the game), so _G never holds the key */
+   { "require",	lj_cf_package_require },
++#endif
+   { NULL, NULL }
+ };
+ 

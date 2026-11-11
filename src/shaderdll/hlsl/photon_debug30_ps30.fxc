@@ -1,0 +1,7 @@
+// Photon_Debug30 pixel shader (T3.3, ps_3_0): solid colour, output = c0 exactly (no 0.5 factor, unlike the stock
+// fillrate_ps20b that Photon_Debug reuses). Photon_Debug30 uploads c0 = ($photoncolor * $color, $alpha).
+const float4 g_Color : register(c0);
+float4 main() : COLOR
+{
+	return g_Color;
+}

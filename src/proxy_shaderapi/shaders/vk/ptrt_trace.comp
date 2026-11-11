@@ -1,0 +1,249 @@
+#version 450
+// PT-RT (analysis/43): one bounce ray per pixel (half resolution) through the voxel cascades, the GPU twin of src/ambient/vox_cascade.c.
+// The light at the hit: the sun (a voxel shadow ray toward it) on the hit's surface colour, plus the sky; a ray that escapes sees the sky.
+// Output: the pixel's light but the sun's direct (the composite adds it, sharp): one resampled lamp plus one bounce (RGB, linear), accumulated over frames (a: frames).
+// The bounce reads the radiance cache where it lands, so it carries every bounce the cache has gathered.
+layout(local_size_x = 8, local_size_y = 8) in;
+
+#define RAD_ACCESS readonly
+#define DYN_LAMPS
+#include "ptrt_vox.glsl"
+layout(binding = 1) uniform sampler2D sceneDepth;
+layout(binding = 2, rgba16f) uniform writeonly image2D outImg;   // the accumulated light (rgb) and its frame count (a), this frame's history
+layout(binding = 3) uniform sampler2D histIn;                    // last frame's history (bilinear)
+layout(binding = 4, r32f) uniform writeonly image2D distOut;     // this frame: the distance from the eye per pixel (1e9: nothing)
+layout(binding = 5) uniform sampler2D distIn;                    // last frame's distances (nearest)
+// the view (ptrt.c, per frame): inv = this frame's inverse view-projection rows; prev = last frame's view-projection rows (clip = rows . p);
+// cam.xyz this eye, cam.w frame; pcam.xyz last frame's eye, pcam.w the longest history (frames); opt.x 1: checkerboard (DYN ptcheck: the
+// pixels not of this frame's colour keep their reprojected history when it is valid); opt.y 1: the radiance cache view (PHOTON_PTRT_DEBUG)
+layout(std140, binding = 6) uniform View { vec4 inv[4]; vec4 prev[4]; vec4 cam; vec4 pcam; vec4 opt; vec4 opt2; vec4 opt3; } pc;   // opt2.x: binding 11 drawn; opt3.x the rays' start offset
+// auto exposure (ptrt.c): per frame slot (opt.z), the sum of log2 luminance x 256 and the pixel count of this frame's accumulated light
+layout(std430, binding = 8) buffer Lum { int v[]; } lum;
+layout(binding = 9, r32f) uniform writeonly image2D sunVis;   // the world's sun visibility per pixel (a voxel ray, unfiltered): the composite's
+                                                              // sharp sun takes the props' from Photon's shadow map and the world's from here
+layout(binding = 12) uniform sampler2D worldPbr;   // PBR step 3: the world's roughness (r), metalness (g), a 1 where written (pc.opt2.y)
+layout(binding = 13, rgba16f) uniform writeonly image2D specOut;   // the glossy reflection accumulated (rgb), as the light is
+layout(binding = 14) uniform sampler2D specIn;                     // last frame's (bilinear)
+layout(binding = 11) uniform sampler2D modelNrm;   // the models' world normals (rgb * 0.5 + 0.5, a 1 on a model's surface), when pc.opt2.x is 1
+layout(binding = 15, rgba16f) uniform writeonly image2D lampOut;   // analysis/46 item 2: the lamps' direct light, its own short history
+layout(binding = 16) uniform sampler2D lampIn;                     // last frame's (bilinear)
+layout(binding = 17, rgba16f) uniform writeonly image2D sumOut;    // the bounce: the filter's input (a: its frames)
+layout(binding = 18, rgba16f) uniform writeonly image2D nrmOut;    // item 3: the pixel's normal for the filter's normal weight
+layout(binding = 10) uniform sampler2D motion;   // the moving models' motion (full size; b 1: rg the offset to last frame's uv, a the distance
+                                                 // from last frame's eye), when pc.opt.w is 1 (shadows.c's velocity pass ran this frame)
+shared int s_sum, s_cnt;
+// where this pixel's point was last frame: the camera's motion, or the model's own where the motion vectors have one
+bool reproject(vec2 uv, vec3 p, out vec2 puv, out float want) {
+    vec4 c0 = vec4(dot(vec4(p, 1), pc.prev[0]), dot(vec4(p, 1), pc.prev[1]), dot(vec4(p, 1), pc.prev[2]), dot(vec4(p, 1), pc.prev[3]));
+    want = length(p - pc.pcam.xyz);
+    puv = vec2(c0.x / max(c0.w, 1e-6) * 0.5 + 0.5, 0.5 - c0.y / max(c0.w, 1e-6) * 0.5);
+    bool ok = c0.w > 1e-3;
+    if (pc.opt.w > 0.5) {
+        vec4 mv = textureLod(motion, uv, 0);
+        if (mv.b > 0.5) { puv = uv + mv.rg; want = mv.a; ok = true; }
+    }
+    return ok && all(greaterThanEqual(puv, vec2(0))) && all(lessThanEqual(puv, vec2(1)));
+}
+
+vec3 world_of(vec2 uv, float d) {
+    vec4 ndc = vec4(uv.x * 2 - 1, 1 - uv.y * 2, d, 1);
+    vec4 w = vec4(dot(ndc, pc.inv[0]), dot(ndc, pc.inv[1]), dot(ndc, pc.inv[2]), dot(ndc, pc.inv[3]));
+    return w.xyz / w.w;
+}
+
+void add_lum(vec3 c) {
+    atomicAdd(s_sum, int(clamp(log2(max(dot(c, vec3(0.2126, 0.7152, 0.0722)), 1e-4)), -14.0, 8.0) * 256.0));
+    atomicAdd(s_cnt, 1);
+}
+void main_px();
+void main() {
+    if (gl_LocalInvocationIndex == 0u) { s_sum = 0; s_cnt = 0; }
+    barrier();
+    main_px();
+    barrier();
+    if (gl_LocalInvocationIndex == 0u && s_cnt > 0) {
+        uint slot = uint(pc.opt.z) * 2u;
+        atomicAdd(lum.v[slot], s_sum); atomicAdd(lum.v[slot + 1u], s_cnt);
+    }
+}
+vec3 g_n = vec3(0);
+void put(ivec2 px, vec4 bounce, vec4 lamp) {   // the bounce's history, the lamps', and their sum for the filter
+    imageStore(nrmOut, px, vec4(g_n, 0));
+    imageStore(outImg, px, bounce); imageStore(lampOut, px, lamp); imageStore(sumOut, px, vec4(bounce.rgb, bounce.a));   // the bounce alone: the lamps have their own filter chain (ptrt.c), added back in ptrt_ao.comp
+}
+void main_px() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy), sz = imageSize(outImg);
+    if (px.x >= sz.x || px.y >= sz.y) return;
+    vec2 uv = (vec2(px) + 0.5) / vec2(sz), du = 1.0 / vec2(sz);
+    // snapped to a texel centre of the full-size depth: this image's pixel centres fall exactly between two depth rows, where nearest
+    // sampling took either row by rounding, so the rebuilt point and its normal came from the other row: whole rows of the light lit wrong
+    // (the PBR test map's floor striped every ~6 pixels, strongest close by)
+    { vec2 fsz = vec2(textureSize(sceneDepth, 0)); uv = (floor(uv * fsz - 0.5) + 0.5) / fsz; }   // (the exact boundary - half a texel: robust)
+    float d = textureLod(sceneDepth, uv, 0).r;
+    if (d >= 0.99999) { put(px, vec4(0), vec4(0)); imageStore(specOut, px, vec4(0)); imageStore(distOut, px, vec4(1e9)); return; }
+    vec3 p = world_of(uv, d);
+    // the normal from 2-pixel differences (the depth's own pixels, not this half-size image's), each axis taking the side nearer in depth:
+    // one-pixel steps of the 24-bit depth on a grazing floor bent the normal row by row, which banded the glossy reflections (and the
+    // bounce, faintly) in horizontal stripes; the nearer side keeps edges from bending it
+    vec2 fd = 1.0 / vec2(textureSize(sceneDepth, 0));
+    vec2 ex = vec2(2.0 * fd.x, 0), ey = vec2(0, 2.0 * fd.y);
+    vec3 xa = world_of(uv + ex, textureLod(sceneDepth, uv + ex, 0).r) - p, xb = p - world_of(uv - ex, textureLod(sceneDepth, uv - ex, 0).r);
+    vec3 ya = world_of(uv + ey, textureLod(sceneDepth, uv + ey, 0).r) - p, yb = p - world_of(uv - ey, textureLod(sceneDepth, uv - ey, 0).r);
+    vec3 n = normalize(cross(dot(xa, xa) < dot(xb, xb) ? xa : xb, dot(ya, ya) < dot(yb, yb) ? ya : yb));
+    if (pc.opt2.x > 0.5) {   // a model's own normal where it drew (smooth; the depth's is faceted)
+        vec4 mn = textureLod(modelNrm, uv, 0);
+        if (mn.a > 0.5) n = normalize(mn.rgb * 2.0 - 1.0);
+    }
+    if (dot(n, pc.cam.xyz - p) < 0) n = -n;
+    g_n = n;
+    if (pc.opt.y > 0.5) {   // PHOTON_PTRT_DEBUG=1: the radiance cache itself, at the voxel the eye ray meets (the side it sees), no accumulation
+        vec3 dv = normalize(p - pc.cam.xyz);
+        Hit hv;
+        vec4 cv = trace(pc.cam.xyz, dv, 1.0, length(p - pc.cam.xyz) + 64.0, hv) ? rad_get(hv.vid, side_seen(hv.n, dv)) : vec4(0);
+        imageStore(distOut, px, vec4(length(p - pc.cam.xyz)));
+        vec3 c = cv.w <= 0.0 ? vec3(1, 0, 1) * 0.2                               // magenta: not cached yet (or the ray missed)
+               : any(isnan(cv.rgb)) || any(isinf(cv.rgb)) ? vec3(0, 1, 1)        // cyan: NaN / inf
+               : dot(cv.rgb, vec3(1)) == 0.0 ? vec3(1, 0.5, 0) * 0.3            // orange: cached, exactly zero
+               : cv.rgb;
+        put(px, vec4(c, 1), vec4(0)); imageStore(specOut, px, vec4(0));
+        return;
+    }
+    if (pc.opt.x > 0.5 && ((px.x + px.y + int(pc.cam.w)) & 1) == 1) {   // checkerboard: this pixel rests this frame if its history holds
+        float dist0 = length(p - pc.cam.xyz);
+        vec2 puv; float want;
+        if (reproject(uv, p, puv, want)) {
+            {
+                float pd = textureLod(distIn, puv, 0).r;
+                if (abs(pd - want) < 0.03 * want + 4.0) {
+                    imageStore(distOut, px, vec4(dist0));
+                    vec3 sd = fvec(20); Hit hs1;   // the sun's visibility is per frame, not history
+                    imageStore(sunVis, px, vec4(dot(n, sd) > 0.0 && trace(p + n * 2.0, sd, 1.0, 65536.0, hs1) ? 0.0 : 1.0));
+                    vec4 hh = textureLod(histIn, puv, 0);
+                    vec4 lh = textureLod(lampIn, puv, 0);
+                    put(px, hh, lh);
+                    imageStore(specOut, px, textureLod(specIn, puv, 0));
+                    add_lum(hh.rgb + lh.rgb);
+                    return;
+                }
+            }
+        }
+    }
+    vec3 sun = fvec(20), sunc = fvec(24), sky = fvec(28);
+    uint seed = hash(uint(px.x) * 1973u + uint(px.y) * 9277u + uint(pc.cam.w) * 26699u);
+    // a cosine-weighted direction around n
+    vec3 tx = normalize(abs(n.x) < 0.9 ? cross(n, vec3(1, 0, 0)) : cross(n, vec3(0, 1, 0))), ty = cross(n, tx);
+    float u1 = rnd(seed), u2 = rnd(seed), r = sqrt(u1), ph = 6.2831853 * u2;
+    vec3 dir = normalize(r * cos(ph) * tx + r * sin(ph) * ty + sqrt(max(0.0, 1 - u1)) * n);
+    // the rays start this far out along the normal (PHOTON_PTRT_RAYOFS, default 2 units)
+    vec3 o = p + n * pc.opt3.x;
+    // direct light at the pixel: the sun (a voxel shadow ray) and one lamp resampled from 8 random candidates by their unshadowed light
+    // (weight = the candidates' mean light x the lamp count / the chosen one's), with a voxel shadow ray to it
+    vec3 direct = vec3(0);
+    float ndl0 = dot(n, sun);
+    Hit hd;
+    // the sun at the pixel itself is the composite's (outside this filter): here only its visibility through the world (voxels)
+    { Hit hs0; imageStore(sunVis, px, vec4(ndl0 > 0.0 && trace(o, sun, 1.0, 65536.0, hs0) ? 0.0 : 1.0)); }
+    uint nl = pk.w[33], lo = pk.w[34];
+    if (nl > 0u) {
+        float wsum = 0.0, wpick = 0.0; vec3 cpick = vec3(0), lpick = vec3(0); float dpick = 0.0;
+        for (int c = 0; c < 8; c++) {
+            uint li = min(uint(rnd(seed) * float(nl)), nl - 1u);
+            vec3 l; float ld;
+            vec3 f = lamp_light(lo + li * 20u, p, n, l, ld);
+            float w = luma(f);
+            wsum += w;
+            if (w > 0.0 && rnd(seed) * wsum < w) { wpick = w; cpick = f; lpick = l; dpick = ld; }
+        }
+        if (wpick > 0.0 && !trace(o, lpick, 1.0, dpick - 8.0, hd)) direct += cpick * (wsum / 8.0 * float(nl)) / wpick;
+    }
+    uint nd = uint(pc.opt3.w), db = uint(pc.opt3.z);
+    if (nd > 0u) {   // SP layer 2: one dynamic lamp, resampled apart from the map's (a small light near the eye is not lost among hundreds)
+        float wsum = 0.0, wpick = 0.0; vec3 cpick = vec3(0), lpick = vec3(0); float dpick = 0.0;
+        uint nc = min(nd, 8u);
+        for (uint c = 0u; c < nc; c++) {
+            uint li = nd <= 8u ? c : min(uint(rnd(seed) * float(nd)), nd - 1u);
+            vec3 l; float ld;
+            vec3 f = lamp_light_dyn(db + li * 20u, p, n, l, ld);
+            float w = luma(f);
+            wsum += w;
+            if (w > 0.0 && rnd(seed) * wsum < w) { wpick = w; cpick = f; lpick = l; dpick = ld; }
+        }
+        if (wpick > 0.0 && !trace(o, lpick, 1.0, dpick - 8.0, hd)) direct += cpick * (wsum / float(nc) * float(nd)) / wpick;
+    }
+    Hit h;
+    vec3 L;
+    if (!trace(o, dir, 1.0, 65536.0, h)) L = sky;
+    else {
+        vec3 hp = o + dir * h.t;
+        vec3 hn = dot(h.n, dir) > 0 ? -h.n : h.n;
+        float ndl = max(dot(hn, sun), 0.0);
+        vec4 cached = rad_get(h.vid, side_seen(h.n, dir));
+        if (cached.w > 0.0) L = cached.rgb;   // the light leaving the hit voxel, every bounce so far
+        else {                                // not cached yet: its sun and a share of the sky
+            Hit hs;
+            float vis = ndl > 0 && !trace(hp + hn * 8.0 - dir * 4.0, sun, 1.0, 65536.0, hs) ? 1.0 : 0.0;
+            L = h.albedo * (sunc * ndl * vis + sky * 0.5);
+        }
+    }
+    // PBR step 3: a glossy reflection where the world's material is smooth or metal: one GGX-sampled reflection ray (around the mirror
+    // direction, by the roughness), the radiance cache where it lands, else the sky; kept apart from the light (the composite weights it
+    // by Fresnel and tints metals by their albedo)
+    vec3 S = vec3(0);
+    bool glossy = false;
+    if (pc.opt2.y > 0.5) {
+        vec4 pb = textureLod(worldPbr, uv, 0);
+        glossy = pb.a > 0.5 && (pb.r < 0.45 || pb.g > 0.5);   // rough materials (concrete ~0.55+) trace no reflection
+        if (glossy) {
+            vec3 v = normalize(pc.cam.xyz - p);
+            float a = max(pb.r * pb.r, 0.002);
+            float g1 = rnd(seed), g2 = rnd(seed);
+            float ct = sqrt((1.0 - g1) / (1.0 + (a * a - 1.0) * g1)), st = sqrt(max(0.0, 1.0 - ct * ct)), gp = 6.2831853 * g2;
+            vec3 hv = normalize(st * cos(gp) * tx + st * sin(gp) * ty + ct * n);
+            vec3 rd = reflect(-v, hv);
+            if (dot(rd, n) > 0.0) {
+                Hit hr;   // from 12 units out: o sits inside the surface's own 8-unit voxel layer, and nearer hits are the surface itself
+                          // (they banded the floor's reflection every voxel)
+                if (!trace(o, rd, 12.0, 65536.0, hr)) S = sky;
+                else {
+                    vec4 cr = rad_get(hr.vid, side_seen(hr.n, rd));
+                    S = cr.w > 0.0 ? cr.rgb : hr.albedo * sky * 0.5;
+                }
+            }
+        }
+    }
+    // temporal accumulation: where this point was on screen last frame; its history counts if the distance there agrees
+    float dist = length(p - pc.cam.xyz);
+    imageStore(distOut, px, vec4(dist));
+    // the bounce (with the sky through escaping rays) and the lamps' direct light accumulate apart (analysis/46 item 2, Q2RTX's channels):
+    // the bounce over up to pcam.w frames, the lamps over at most 6, so a moving or switched lamp does not lag (PHOTON_PTRT_LAMPHIST=1;
+    // default off: it darkened interiors through the filter's brightness stop, analysis/46; pc.opt2.z)
+    bool split = pc.opt2.z > 0.5;
+    if (!split) { L += direct; direct = vec3(0); }
+    vec4 acc = vec4(L, 1), sacc = vec4(S, 1), lacc = vec4(direct, 1);
+    vec2 puv; float want;
+    if (reproject(uv, p, puv, want)) {
+        if (pc.opt3.y > 0.5) puv = uv;   // PHOTON_PTRT_NOREPROJ=1 (a still-camera test): the history at the pixel itself
+        {
+            float pd = textureLod(distIn, puv, 0).r;
+            if (abs(pd - want) < 0.03 * want + 4.0) {
+                vec4 h = textureLod(histIn, puv, 0);
+                float n = min(h.a + 1.0, pc.pcam.w);
+                // fireflies (analysis/46 item 5, kajiya): a settled pixel's new sample counts at most 10x its history's brightness
+                float lh = luma(h.rgb), ln = luma(L);
+                // off by default (pc.opt2.w; PHOTON_PTRT_FFCAP=1): with one bounce ray a pixel, a ray onto a sunlit patch is rightly 10x the
+                // mean, and capping it darkened interiors by up to 20% on the laptop (nf_turn); Lumen clamps only in the filter
+                if (pc.opt2.w > 0.5 && h.a >= 4.0 && ln > 10.0 * lh + 1e-4) L *= (10.0 * lh + 1e-4) / ln;
+                acc = vec4(mix(h.rgb, L, 1.0 / n), n);
+                if (split) { vec4 lp = textureLod(lampIn, puv, 0); float nl2 = min(lp.a + 1.0, 6.0); lacc = vec4(mix(lp.rgb, direct, 1.0 / nl2), nl2); }
+                if (glossy) {   // item 6: the reflection's history by roughness: ~2 frames for mirrors up to 16 for glossy (no smearing in motion)
+                    float r = textureLod(worldPbr, uv, 0).r;
+                    float ns = min(n, mix(2.0, 16.0, clamp(r / 0.45, 0.0, 1.0)));
+                    sacc = vec4(mix(textureLod(specIn, puv, 0).rgb, S, 1.0 / ns), n);
+                }
+            }
+        }
+    }
+    put(px, acc, lacc);
+    imageStore(specOut, px, glossy ? sacc : vec4(0));
+    add_lum(acc.rgb + lacc.rgb);
+}

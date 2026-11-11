@@ -1,0 +1,3 @@
+LIBRARY smoke_dll
+EXPORTS
+    CreateInterface

@@ -1,0 +1,8 @@
+// Photon_Debug32 pixel shader (T3.4a2, ps_3_0): output = c32 exactly. Nothing in the engine writes c32: stock
+// shaderapi's PS constant state ends at c31 (analysis/13 R15), so c32 holds what the Photon proxy writes straight to
+// the D3D9 device (src/proxy_shaderapi/d3dconst.c, PHOTON_TEST_C32), or DXVK's initial zeros without it.
+const float4 g_C32 : register(c32);
+float4 main() : COLOR
+{
+	return g_C32;
+}

@@ -1,0 +1,22 @@
+--- a/src/common/photon_cpu_host.h
++++ b/src/common/photon_cpu_host.h
+@@ -8,7 +8,7 @@
+ #define PHOTON_CPU_HOST_H
+ #include <stdint.h>
+ 
+-enum { PHOTON_CPU_HOST_VERSION = 3 };   /* 2: water_pixels (W1 / C4b, 2026-11-09); 3: the DYN step API (2026-11-09) */
++enum { PHOTON_CPU_HOST_VERSION = 4 };   /* 2: water_pixels (W1 / C4b, 2026-11-09); 3: the DYN step API (2026-11-09); 4: dyn_available (2026-11-10) */
+ 
+ typedef struct PhotonCpuHost {
+     int version;                                    /* PHOTON_CPU_HOST_VERSION of the proxy */
+@@ -37,6 +37,10 @@
+                                                      * or two */
+     double (*main_busy_ms)(void);                   /* the engine main thread's CPU time over the last presented frame, in ms (for
+                                                      * telling CPU-bound frames from GPU-bound ones); any thread */
++    /* version >= 4 */
++    int (*dyn_available)(int step);                 /* 1 when the step has something to act on now (loot to remove, more corpses than its
++                                                     * limit...), 0 when engaging it would do nothing (the controller skips it instead of
++                                                     * checking it for 2 s and holding the side); any thread; may be NULL (all available) */
+ } PhotonCpuModule;
+ 
+ /* exported by photon_cpu.dll; returns its module table (static storage) or NULL to stay unloaded */

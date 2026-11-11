@@ -1,0 +1,14 @@
+// Photon_DebugVol pixel shader (P3d, ps_3_0): reads the ambient volume on s15 with the shader fetch documented in
+// src/ambient/amb_bake.h, on one face band. The screen quad at (64, 64), 256 px, maps to a 16-voxel window that crosses
+// both the X band wrap (the gutter) and the Y wrap, so the readback covers the seams. Only the proxy binds s15
+// (src/proxy_shaderapi/ambvol.c, PHOTON_TEST_VOL=1).
+sampler3D g_Vol : register(s15);
+float4 main(float2 vpos : VPOS) : COLOR
+{
+	const float X = 64, Y = 64, Z = 32, FACE = 2;
+	float2 q = (vpos - 64) / 256;
+	float3 p = float3(56 + q.x * 16, 56 + q.y * 16, 16.5);
+	float band = frac((p.x - 0.5) / X) * X + 0.5;
+	float u = (FACE * (X + 1) + band) / (6 * (X + 1));
+	return float4(tex3Dlod(g_Vol, float4(u, p.y / Y, p.z / Z, 0)).rgb, 1);
+}

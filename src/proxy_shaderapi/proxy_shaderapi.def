@@ -1,0 +1,3 @@
+LIBRARY shaderapidx9
+EXPORTS
+    CreateInterface

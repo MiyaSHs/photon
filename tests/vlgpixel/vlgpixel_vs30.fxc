@@ -1,0 +1,37 @@
+// vlgpixel_vs30.fxc: test VS for tests/vlgpixel. Passes affine per-vertex data straight to the interpolators that
+// GMod's vertexlit_and_unlit_generic_vs30 writes (VS_OUTPUT layout of SDK vertexlit_and_unlit_generic_vs20.fxc).
+struct VS_INPUT
+{
+	float4 vPos			: POSITION;		// clip space, w = 1
+	float3 vNormal		: NORMAL;		// world normal (unnormalised; the PS normalises)
+	float4 vColor		: COLOR0;		// float4: the VS lighting colour stand-in
+	float4 vTex			: TEXCOORD0;	// xy base uv, zw detail uv
+	float3 vWorldPos	: TEXCOORD1;
+	float3 vEye			: TEXCOORD2;
+};
+struct VS_OUTPUT
+{
+	float4 projPos				: POSITION;
+	float2 baseTexCoord			: TEXCOORD0;
+	float2 detailTexCoord		: TEXCOORD1;
+	float4 color				: TEXCOORD2;
+	float3 worldVertToEyeVector	: TEXCOORD3;
+	float3 worldSpaceNormal		: TEXCOORD4;
+	float4 vProjPos				: TEXCOORD6;
+	float4 worldPos_ProjPosZ	: TEXCOORD7;
+	float4 fogFactorW			: COLOR1;
+};
+VS_OUTPUT main( const VS_INPUT v )
+{
+	VS_OUTPUT o;
+	o.projPos = v.vPos;
+	o.baseTexCoord = v.vTex.xy;
+	o.detailTexCoord = v.vTex.zw;
+	o.color = v.vColor;
+	o.worldVertToEyeVector = v.vEye;
+	o.worldSpaceNormal = v.vNormal;
+	o.vProjPos = float4( v.vPos.xy, v.vWorldPos.z * 0.01f + 0.5f, 1.0f );
+	o.worldPos_ProjPosZ = float4( v.vWorldPos, o.vProjPos.z );
+	o.fogFactorW = float4( 0.0f, 0.0f, 0.0f, 1.0f );
+	return o;
+}

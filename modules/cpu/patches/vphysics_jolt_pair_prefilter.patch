@@ -1,0 +1,214 @@
+diff --git a/joltphysics/src b/joltphysics/src
+--- a/joltphysics/src
++++ b/joltphysics/src
+@@ -1 +1 @@
+-Subproject commit eef169f9022f210b7193fa4fb50b2bdd87a00068
++Subproject commit eef169f9022f210b7193fa4fb50b2bdd87a00068-dirty
+diff --git a/vphysics_jolt/CMakeLists.txt b/vphysics_jolt/CMakeLists.txt
+index 510b15f..4560d96 100644
+--- a/vphysics_jolt/CMakeLists.txt
++++ b/vphysics_jolt/CMakeLists.txt
+@@ -98,7 +98,8 @@ endif()
+ set(USE_STATIC_MSVC_RUNTIME_LIBRARY ON CACHE BOOL "" FORCE)
+ set(INTERPROCEDURAL_OPTIMIZATION OFF CACHE BOOL "" FORCE)
+ set(ENABLE_ALL_WARNINGS OFF CACHE BOOL "" FORCE)
+-set(PROFILER_IN_DEBUG_AND_RELEASE OFF CACHE BOOL "" FORCE)
++option(VOLT_JOLT_PROFILER "Build Jolt with its profiler (VJOLT_PROFILE_DUMP_AT=<simulate> writes profile_*.html)" OFF)
++set(PROFILER_IN_DEBUG_AND_RELEASE ${VOLT_JOLT_PROFILER} CACHE BOOL "" FORCE)
+ set(DEBUG_RENDERER_IN_DEBUG_AND_RELEASE OFF CACHE BOOL "" FORCE)
+ set(GENERATE_DEBUG_SYMBOLS ON CACHE BOOL "" FORCE)
+ option(VOLT_JOLT_CHECKED_BUILD "Enable fatal Jolt assertions for ABI regression runs" OFF)
+diff --git a/vphysics_jolt/vjolt_environment.cpp b/vphysics_jolt/vjolt_environment.cpp
+index 1f668a8..ab0c7da 100755
+--- a/vphysics_jolt/vjolt_environment.cpp
++++ b/vphysics_jolt/vjolt_environment.cpp
+@@ -369,10 +369,35 @@ private:
+ 	std::vector< JoltSpringImpulse > m_PendingImpulses;
+ };
+ 
++// Reject, before the narrow phase, a body pair the game has already said must not collide (the ShouldCollide cache). Without it a
++// filtered pair still got a full contact computation every step and was then turned into a sensor (OnContactAdded): about twice the
++// physics cost of IVP with overlapping non-colliding ragdolls. Sensors (triggers) and pairs without a cached answer are left alone, so
++// their events are unchanged. VJOLT_NO_PAIR_PREFILTER=1 turns it off.
++static bool VJoltBroadPhasePairFilter( const JPH::Body &inBody1, const JPH::Body &inBody2 )
++{
++	if ( inBody1.IsSensor() || inBody2.IsSensor() )
++		return true;
++	auto *pObject1 = reinterpret_cast<JoltPhysicsObject *>( inBody1.GetUserData() );
++	auto *pObject2 = reinterpret_cast<JoltPhysicsObject *>( inBody2.GetUserData() );
++	if ( !pObject1 || !pObject2 )
++		return true;
++	JoltPhysicsEnvironment *pEnvironment = pObject1->GetJoltEnvironment();
++	if ( !pEnvironment || pEnvironment != pObject2->GetJoltEnvironment() )
++		return true;
++	return !pEnvironment->GetContactListener()->CachedPairRejected( pObject1, pObject2 );
++}
++
++static void VJoltInstallPairFilter()
++{
++	const char *off = getenv( "VJOLT_NO_PAIR_PREFILTER" );
++	JPH::Body::sPairFilter = ( off && off[0] == '1' ) ? nullptr : VJoltBroadPhasePairFilter;
++}
++
+ JoltPhysicsEnvironment::JoltPhysicsEnvironment()
+ 	: m_ActivationListener( m_PhysicsSystem )
+ 	, m_ContactListener( m_PhysicsSystem )
+ {
++	VJoltInstallPairFilter();
+ 	m_PerformanceParams.Defaults();
+ 
+ 	m_PhysicsSystem.Init(
+@@ -1237,9 +1262,36 @@ void JoltPhysicsEnvironment::SetCollisionSolver( IPhysicsCollisionSolver *pSolve
+ 
+ //-------------------------------------------------------------------------------------------------
+ 
++#ifdef JPH_PROFILE_ENABLED
++static double s_LastSimulateMs = 0.0;
++#endif
+ void JoltPhysicsEnvironment::Simulate( float deltaTime )
+ {
+ 	VJoltCPU::SourceOwner().Bind();
++#ifdef JPH_PROFILE_ENABLED
++	{   using namespace JPH;   // Jolt's profiler: one frame per Simulate; VJOLT_PROFILE_DUMP_AT=<n> writes that frame's timeline (all threads) to profile_*.html
++		static const int dumpAt = []() { const char *v = std::getenv( "VJOLT_PROFILE_DUMP_AT" ); return v ? std::atoi( v ) : 0; }();
++		static int simulateCount = 0;
++		// VJOLT_PROFILE_SPIKE_MS=<ms>: dump (up to 5) frames whose Simulate took longer, i.e. the previous frame when it was slow
++		static const double spikeMs = []() { const char *v = std::getenv( "VJOLT_PROFILE_SPIKE_MS" ); return v ? std::atof( v ) : 0.0; }();
++		static int spikeDumps = 0;
++		if ( spikeMs > 0.0 && s_LastSimulateMs > spikeMs && spikeDumps < 5 )
++		{
++			++spikeDumps;
++			JPH_PROFILE_DUMP( "vjolt_spike_" + JPH::ConvertToString( simulateCount ) + "_" + JPH::ConvertToString( int( s_LastSimulateMs ) ) + "ms" );
++		}
++		JPH_PROFILE_NEXTFRAME();
++		++simulateCount;
++		if ( dumpAt > 0 && simulateCount >= dumpAt && simulateCount <= dumpAt + 500 && ( simulateCount - dumpAt ) % 100 == 0 )
++			JPH_PROFILE_DUMP( "vjolt_" + JPH::ConvertToString( simulateCount ) );
++	}
++	JPH::ProfileMeasurement vjoltSimulateZone( "VJolt Simulate (whole)" );
++	struct SimulateTimer   // the whole Simulate, for the spike dump above
++	{
++		std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
++		~SimulateTimer() { s_LastSimulateMs = std::chrono::duration<double, std::milli>( std::chrono::steady_clock::now() - start ).count(); }
++	} vjoltSimulateTimer;
++#endif
+ 	// Handle pausing the game...
+ 	if ( deltaTime == 0.0f )
+ 		return;
+@@ -1468,6 +1520,23 @@ void JoltPhysicsEnvironment::Simulate( float deltaTime )
+ 	};
+ 
+ 	bool bRanInitialSettling = false;
++	{
++		static const double reoptimizeSeconds = []() { const char *v = std::getenv( "VJOLT_REOPTIMIZE_SECONDS" ); return v ? std::atof( v ) : 0.0; }();
++		if ( reoptimizeSeconds > 0.0 && m_bOptimizedBroadPhase )
++		{
++			const double now = Plat_FloatTime();
++			const JPH::uint bodies = m_PhysicsSystem.GetNumBodies();
++			if ( now - m_flLastOptimizeTime >= reoptimizeSeconds && bodies != m_nBodiesAtLastOptimize )
++			{
++#ifdef JPH_PROFILE_ENABLED
++				JPH::ProfileMeasurement reoptimizeZone( "VJolt reoptimize broad phase" );
++#endif
++				m_PhysicsSystem.OptimizeBroadPhase();
++				m_nBodiesAtLastOptimize = bodies;
++				m_flLastOptimizeTime = now;
++			}
++		}
++	}
+ 	// If we haven't already, optimize the broadphase, currently this can only happen once per-environment
+ 	if ( !m_bOptimizedBroadPhase )
+ 	{
+diff --git a/vphysics_jolt/vjolt_environment.h b/vphysics_jolt/vjolt_environment.h
+index cc13932..171bb99 100644
+--- a/vphysics_jolt/vjolt_environment.h
++++ b/vphysics_jolt/vjolt_environment.h
+@@ -324,6 +324,11 @@ private:
+ 	bool m_bDeletingDeadObjects = false;
+ 	bool m_bWakeObjectsOnConstraintDeletion = false;
+ 	bool m_bOptimizedBroadPhase = false;
++	// Re-optimize the broad phase when bodies were added or removed (VJOLT_REOPTIMIZE_SECONDS): the one-time optimize at the first
++	// Simulate leaves later insertions (ragdolls, debris, NPC shadows) unbalanced; the battle's step spikes were in
++	// BroadPhaseQuadTree::NotifyBodiesAABBChanged.
++	JPH::uint m_nBodiesAtLastOptimize = 0;
++	double m_flLastOptimizeTime = 0.0;
+ 	bool m_bUseLinearCast = false;
+ 	bool m_bUseEnhancedEdgeDetection = true;
+ 	float m_flStepTime = 1.0f / 64.0f;
+diff --git a/vphysics_jolt/vjolt_interface.cpp b/vphysics_jolt/vjolt_interface.cpp
+index 74f84ce..44bf52b 100644
+--- a/vphysics_jolt/vjolt_interface.cpp
++++ b/vphysics_jolt/vjolt_interface.cpp
+@@ -175,6 +175,9 @@ InitReturnVal_t JoltPhysicsInterface::Init()
+ 		threadCount = Clamp( uint32( Max( std::atoi( workerThreadCount ), 0 ) ), 0u, kMaxPhysicsThreads );
+ 	if ( const char *testThreadCount = std::getenv( "VJOLT_TEST_WORKER_THREADS" ) )
+ 		threadCount = Clamp( uint32( Max( std::atoi( testThreadCount ), 0 ) ), 0u, kMaxPhysicsThreads );
++#ifdef JPH_PROFILE_ENABLED
++	{ using namespace JPH; JPH_PROFILE_START( "Main" ); }   // before the pool: its threads register with the profiler as they start
++#endif
+ 	auto *pool = new JPH::JobSystemThreadPool();
+ 	pool->SetThreadInitFunction([](int) { VJoltCPU::BindWorker(); });
+ 	pool->Init( JPH::cMaxPhysicsJobs, JPH::cMaxPhysicsBarriers, int( threadCount ) );
+diff --git a/vphysics_jolt/vjolt_listener_contact.h b/vphysics_jolt/vjolt_listener_contact.h
+index 51cb31a..f5e77ad 100644
+--- a/vphysics_jolt/vjolt_listener_contact.h
++++ b/vphysics_jolt/vjolt_listener_contact.h
+@@ -866,6 +866,14 @@ public:
+ 		return pObject->GetBodyID().GetIndexAndSequenceNumber();
+ 	}
+ 
++	// Broad phase prefilter: a cached "must not collide" answer for the pair. Read-only (shared lock), any thread.
++	bool CachedPairRejected( const JoltPhysicsObject *pObject0, const JoltPhysicsObject *pObject1 ) const
++	{
++		const VJoltShouldCollideCache::Lookup lookup =
++			m_ShouldCollideCache.Find( MakeShouldCollideObjectKey( pObject0 ), MakeShouldCollideObjectKey( pObject1 ) );
++		return lookup.found && !lookup.shouldCollide;
++	}
++
+ 	void InvalidateShouldCollideCache( JoltPhysicsObject *pObject )
+ 	{
+ 		if ( pObject )
+diff --git a/joltphysics/src/Jolt/Physics/Body/Body.cpp b/joltphysics/src/Jolt/Physics/Body/Body.cpp
+index 2d8b3d4..aabd413 100644
+--- a/joltphysics/src/Jolt/Physics/Body/Body.cpp
++++ b/joltphysics/src/Jolt/Physics/Body/Body.cpp
+@@ -21,6 +21,7 @@ JPH_NAMESPACE_BEGIN
+ 
+ static const EmptyShape sFixedToWorldShape;
+ Body Body::sFixedToWorld(false);
++Body::PairFilterFn Body::sPairFilter = nullptr;
+ static atomic<uint64> sMotionTypeChangeSequence { 0 };
+ 
+ uint64 Body::GetMotionTypeChangeSequence()
+diff --git a/joltphysics/src/Jolt/Physics/Body/Body.h b/joltphysics/src/Jolt/Physics/Body/Body.h
+index d9928b4..a019420 100644
+--- a/joltphysics/src/Jolt/Physics/Body/Body.h
++++ b/joltphysics/src/Jolt/Physics/Body/Body.h
+@@ -340,6 +340,12 @@ public:
+ 	/// A dummy body that can be used by constraints to attach a constraint to the world instead of another body
+ 	static Body				sFixedToWorld;
+ 
++	/// Optional application filter for broad phase body pairs, checked after the collision group (null: none). It is called from the
++	/// broad phase on worker threads, so it must be thread safe and cheap. (VPhysics-Jolt: rejects pairs the game filtered out before
++	/// any narrow phase work.)
++	using PairFilterFn = bool (*)(const Body &inBody1, const Body &inBody2);
++	static PairFilterFn		sPairFilter;
++
+ 	///@name THESE FUNCTIONS ARE FOR INTERNAL USE ONLY AND SHOULD NOT BE CALLED BY THE APPLICATION
+ 	///@{
+ 
+diff --git a/joltphysics/src/Jolt/Physics/Body/Body.inl b/joltphysics/src/Jolt/Physics/Body/Body.inl
+index dbbd64d..e1af633 100644
+--- a/joltphysics/src/Jolt/Physics/Body/Body.inl
++++ b/joltphysics/src/Jolt/Physics/Body/Body.inl
+@@ -75,6 +75,10 @@ inline bool Body::sFindCollidingPairsCanCollide(const Body &inBody1, const Body
+ 	if (!inBody1.GetCollisionGroup().CanCollide(inBody2.GetCollisionGroup()))
+ 		return false;
+ 
++	// Check the application's pair filter
++	if (sPairFilter != nullptr && !sPairFilter(inBody1, inBody2))
++		return false;
++
+ 	return true;
+ }
+ 

@@ -1,0 +1,30 @@
+diff -ruN lja/src/lib_table.c ljb/src/lib_table.c
+--- a/src/lib_table.c	2026-11-09 05:57:15.000000000 -0300
++++ b/src/lib_table.c	2026-11-09 20:28:54.796946340 -0300
+@@ -102,7 +102,12 @@
+     copyTV(L, dst, L->top-1);  /* Set new value. */
+     lj_gc_barriert(L, t, dst);
+   }
++#if LUAJIT_GMOD_SYNTAX
++  setintV(L->top++, i);  /* GMod: table.insert returns the index it inserted at. */
++  return 1;
++#else
+   return 0;
++#endif
+ }
+ 
+ LJLIB_LUA(table_remove) /*
+diff -ruN lja/src/lj_ffrecord.c ljb/src/lj_ffrecord.c
+--- a/src/lj_ffrecord.c	2026-11-09 05:57:15.000000000 -0300
++++ b/src/lj_ffrecord.c	2026-11-09 20:28:54.797102906 -0300
+@@ -1502,6 +1502,10 @@
+       setintV(&ix.keyv, lj_tab_len(t) + 1);
+       ix.idxchain = 0;
+       lj_record_idx(J, &ix);  /* Set new value. */
++#if LUAJIT_GMOD_SYNTAX
++      J->base[0] = ix.key;  /* GMod: table.insert returns the index (#t+1). */
++      rd->nres = 1;
++#endif
+     } else {  /* Complex case: insert in the middle. */
+       recff_nyiu(J, rd);
+       return;

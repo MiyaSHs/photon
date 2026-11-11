@@ -1,0 +1,29 @@
+diff -ruN a/src/lj_obj.h b/src/lj_obj.h
+--- a/src/lj_obj.h	2026-11-09 18:54:15.494501904 -0300
++++ b/src/lj_obj.h	2026-11-09 18:54:15.524836589 -0300
+@@ -703,6 +703,12 @@
+   GCRef env;		/* Thread environment (table of globals). */
+   void *cframe;		/* End of C stack frame chain. */
+   MSize stacksize;	/* True stack size (incl. LJ_STACK_EXTRA). */
++#if LJ_GC64
++  /* GMod: the ILuaBase/ILuaInterface pointer at +0x78, where GMod's LuaJIT keeps it and binary modules read it (garrysmod_common
++  ** Interface.h: L->luabase). */
++  uint8_t gmod_reserved[0x78 - 0x60];
++  void *luabase;
++#endif
+ };
+ 
+ #define G(L)			(mref(L->glref, global_State))
+diff -ruN a/src/lj_state.c b/src/lj_state.c
+--- a/src/lj_state.c	2026-11-09 18:54:15.498501838 -0300
++++ b/src/lj_state.c	2026-11-09 18:54:15.535616555 -0300
+@@ -374,6 +374,9 @@
+   setgcrefr(L1->env, L->env);
+   stack_init(L1, L);  /* init stack */
+   lj_assertL(iswhite(obj2gco(L1)), "new thread object is not white");
++#if LJ_GC64
++  L1->luabase = L->luabase;  /* GMod: coroutines see the same ILuaBase as the state that made them. */
++#endif
+   return L1;
+ }
+ 

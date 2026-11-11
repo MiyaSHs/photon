@@ -1,0 +1,18 @@
+#version 450
+// T4.7b (hiz.c): the far depth of each 8 x 8 block of the world-only depth (shadows.c's copy, R32F: the world drawn before any model),
+// into a host-visible buffer the CPU reads a few frames later to cull hidden model draws. 1.0 (nothing drawn) never hides anything.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 0) uniform sampler2D src;
+layout(std430, binding = 1) writeonly buffer Out { float v[]; } o;
+layout(push_constant) uniform P { uint ofs; int sw, sh, dw, dh; } pc;
+void main() {
+    ivec2 d = ivec2(gl_GlobalInvocationID.xy);
+    if (d.x >= pc.dw || d.y >= pc.dh) return;
+    float m = 0.0;
+    for (int j = 0; j < 8; j++)
+        for (int i = 0; i < 8; i++) {
+            ivec2 s = min(d * 8 + ivec2(i, j), ivec2(pc.sw - 1, pc.sh - 1));
+            m = max(m, texelFetch(src, s, 0).r);
+        }
+    o.v[pc.ofs + uint(d.y * pc.dw + d.x)] = m;
+}

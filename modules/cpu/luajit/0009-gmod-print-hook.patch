@@ -1,0 +1,36 @@
+diff -ruN lja/src/lib_base.c ljb/src/lib_base.c
+--- a/src/lib_base.c	2026-11-09 20:32:22.588974165 -0300
++++ b/src/lib_base.c	2026-11-09 20:32:22.623231524 -0300
+@@ -517,6 +517,11 @@
+   return 1;
+ }
+ 
++#if LUAJIT_GMOD_SYNTAX
++/* GMod: print hands each piece to lua_shared (its ILuaBase Msg, the game's console); NULL keeps stdout. */
++void (*lj_gmod_print_hook)(lua_State *L, const char *s, size_t n);
++#endif
++
+ LJLIB_PUSH("tostring")
+ LJLIB_CF(print)
+ {
+@@ -549,10 +554,20 @@
+ 	lj_err_caller(L, LJ_ERR_PRTOSTR);
+       L->top--;
+     }
++#if LUAJIT_GMOD_SYNTAX
++    if (lj_gmod_print_hook) {
++      if (i) lj_gmod_print_hook(L, "\t", 1);
++      lj_gmod_print_hook(L, str, size);
++      continue;
++    }
++#endif
+     if (i)
+       putchar('\t');
+     fwrite(str, 1, size, stdout);
+   }
++#if LUAJIT_GMOD_SYNTAX
++  if (lj_gmod_print_hook) { lj_gmod_print_hook(L, "\n", 1); return 0; }
++#endif
+   putchar('\n');
+   return 0;
+ }

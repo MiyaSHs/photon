@@ -1,0 +1,53 @@
+diff -ruN lja/src/lj_gc.c ljb/src/lj_gc.c
+--- a/src/lj_gc.c	2026-11-09 05:57:15.000000000 -0300
++++ b/src/lj_gc.c	2026-11-09 20:15:38.923334980 -0300
+@@ -501,6 +501,13 @@
+ }
+ 
+ /* Call a userdata or cdata finalizer. */
++#if LUAJIT_GMOD_SYNTAX
++/* GMod: set by lua_shared. Called around each __gc with the state's ILuaBase: before (after=0) it returns the interface's current
++** lua_State, after (after=1) it puts that one back. GMod's C finalizers call LUA->SetState(L) with the VM thread, which would
++** otherwise leave the interface on it. */
++void *(*lj_gmod_gc_hook)(void *luabase, void *restore, int after);
++#endif
++
+ static void gc_call_finalizer(global_State *g, lua_State *L,
+ 			      cTValue *mo, GCobj *o)
+ {
+@@ -510,6 +517,12 @@
+   int errcode;
+   lua_State *VL = vmthread(g);
+   TValue *top;
++#if LUAJIT_GMOD_SYNTAX
++  /* GMod: __gc runs on the VM thread (beta3 ran it on L); GMod's C functions read L->luabase, so it gets the state's. */
++  void *gmod_lb = mainthread(g)->luabase, *gmod_L = NULL;
++  VL->luabase = gmod_lb;
++  if (lj_gmod_gc_hook && gmod_lb) gmod_L = lj_gmod_gc_hook(gmod_lb, NULL, 0);
++#endif
+   lj_trace_abort(g);
+   hook_entergc(g);  /* Disable hooks and new traces during __gc. */
+   if (LJ_HASPROFILE && (oldh & HOOK_PROFILE)) lj_dispatch_update(g, 0);
+@@ -520,6 +533,9 @@
+   setgcV(VL, top, o, ~o->gch.gct);
+   VL->top = top+1;
+   errcode = lj_vm_pcall(VL, top, 1+0, -1);  /* Stack: |mo|o| -> | */
++#if LUAJIT_GMOD_SYNTAX
++  if (lj_gmod_gc_hook && gmod_lb) lj_gmod_gc_hook(gmod_lb, gmod_L, 1);
++#endif
+   setgcref(g->cur_L, obj2gco(L));
+   hook_restore(g, oldh);
+   if (LJ_HASPROFILE && (oldh & HOOK_PROFILE)) lj_dispatch_update(g, 0);
+diff -ruN lja/src/lj_vmevent.c ljb/src/lj_vmevent.c
+--- a/src/lj_vmevent.c	2026-11-09 05:57:15.000000000 -0300
++++ b/src/lj_vmevent.c	2026-11-09 20:15:38.923466708 -0300
+@@ -18,6 +18,9 @@
+ 
+ ptrdiff_t lj_vmevent_prepare(lua_State *L, VMEvent ev)
+ {
++#if LUAJIT_GMOD_SYNTAX
++  L->luabase = mainthread(G(L))->luabase;  /* GMod: the VM thread, as for __gc (lj_gc.c) */
++#endif
+   global_State *g = G(L);
+   GCstr *s = lj_str_newlit(L, LJ_VMEVENTS_REGKEY);
+   cTValue *tv = lj_tab_getstr(tabV(registry(L)), s);

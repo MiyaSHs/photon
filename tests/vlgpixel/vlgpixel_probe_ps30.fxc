@@ -1,0 +1,5 @@
+// vlgpixel_probe_ps30.fxc: writes the interpolated base uv, so the test knows each pixel's exact sample point.
+float4 main( float2 uv : TEXCOORD0 ) : COLOR
+{
+	return float4( uv, 0.0f, 1.0f );
+}

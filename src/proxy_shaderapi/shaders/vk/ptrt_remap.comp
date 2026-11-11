@@ -1,0 +1,15 @@
+#version 450
+// PT-RT (analysis/46 item 1): the radiance cache carried over to a new pack. The cache is indexed by the pack's brick numbers, which change
+// when a cascade window scrolls; ptrt.c writes, per new brick, the old pack's number for the same world brick (0: new, starts dark) and this
+// pass copies its 2048 words (512 voxels x 2 sides x 2 words) from the old cache to the new one, so moving the camera keeps the gathered
+// light instead of clearing it (Brixelizer / HDDAGI: only invalidated bricks are cleared).
+layout(local_size_x = 64) in;
+layout(std430, binding = 0) readonly buffer Old { uint w[]; } oldc;
+layout(std430, binding = 1) writeonly buffer New { uint w[]; } newc;
+layout(std430, binding = 2) readonly buffer Map { uint w[]; } map;   // w[0]: the new pack's brick count; w[1 + n]: old brick + 1 of new brick n + 1, 0 none
+void main() {
+    uint id = gl_GlobalInvocationID.x, n = id >> 11u, k = id & 2047u;
+    if (n >= map.w[0]) return;
+    uint o = map.w[1u + n];
+    newc.w[id] = o == 0u ? 0u : oldc.w[((o - 1u) << 11u) + k];
+}

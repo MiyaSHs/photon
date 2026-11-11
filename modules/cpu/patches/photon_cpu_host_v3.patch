@@ -1,0 +1,28 @@
+--- a/src/common/photon_cpu_host.h
++++ b/src/common/photon_cpu_host.h
+@@ -8,7 +8,7 @@
+ #define PHOTON_CPU_HOST_H
+ #include <stdint.h>
+ 
+-enum { PHOTON_CPU_HOST_VERSION = 2 };   /* 2: water_pixels (W1 / C4b, 2026-11-09) */
++enum { PHOTON_CPU_HOST_VERSION = 3 };   /* 2: water_pixels (W1 / C4b, 2026-11-09); 3: the DYN step API (2026-11-09) */
+ 
+ typedef struct PhotonCpuHost {
+     int version;                                    /* PHOTON_CPU_HOST_VERSION of the proxy */
+@@ -27,6 +27,16 @@
+     void (*on_present)(void);                       /* may be NULL; called at every Present, on the thread that presents: the material
+                                                      * system's queue thread in queued mode (mat_queue_mode 2), else the main thread. Keep it
+                                                      * short; never block there */
++    /* version >= 3. DYN (the frame-rate target, modules/cpu TASKS DYN): the module's steps for the proxy's controller (dynq.c). A step
++     * is a named way to make frames cheaper on the CPU side, always relative to the user's own settings (never above them). The
++     * controller merges them with its GPU steps in the user's order (setting photon_dyn_order) and engages or releases them. Any
++     * function may be NULL (no steps). */
++    int (*dyn_steps)(const char *const **names);    /* the step names, the module's default order (cheapest quality loss first);
++                                                     * returns their count; the array is static */
++    void (*dyn_set)(int step, int engaged);         /* engage (1) or release (0) step `step`; any thread; takes effect within a tick
++                                                     * or two */
++    double (*main_busy_ms)(void);                   /* the engine main thread's CPU time over the last presented frame, in ms (for
++                                                     * telling CPU-bound frames from GPU-bound ones); any thread */
+ } PhotonCpuModule;
+ 
+ /* exported by photon_cpu.dll; returns its module table (static storage) or NULL to stay unloaded */

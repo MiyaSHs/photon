@@ -1,0 +1,25 @@
+--- a/src/common/photon_cpu_host.h
++++ b/src/common/photon_cpu_host.h
+@@ -8,7 +8,8 @@
+ #define PHOTON_CPU_HOST_H
+ #include <stdint.h>
+ 
+-enum { PHOTON_CPU_HOST_VERSION = 4 };   /* 2: water_pixels (W1 / C4b, 2026-11-09); 3: the DYN step API (2026-11-09); 4: dyn_available (2026-11-10) */
++enum { PHOTON_CPU_HOST_VERSION = 5 };   /* 2: water_pixels (W1 / C4b, 2026-11-09); 3: the DYN step API (2026-11-09); 4: dyn_available (2026-11-10);
++                                         * 5: dyn_saving (2026-11-10) */
+ 
+ typedef struct PhotonCpuHost {
+     int version;                                    /* PHOTON_CPU_HOST_VERSION of the proxy */
+@@ -41,6 +42,12 @@
+     int (*dyn_available)(int step);                 /* 1 when the step has something to act on now (loot to remove, more corpses than its
+                                                      * limit...), 0 when engaging it would do nothing (the controller skips it instead of
+                                                      * checking it for 2 s and holding the side); any thread; may be NULL (all available) */
++    /* version >= 5 */
++    double (*dyn_saving)(int step);                 /* the ms per frame engaging the step is expected to save now, from live measurements
++                                                     * (what is actually using the time); 0 = nothing to save, < 0 = not measured (use the
++                                                     * user's order for it). The controller engages the
++                                                     * largest saving on the bound side first, the user's order breaking near-ties and
++                                                     * disabled steps never used; any thread; may be NULL (the user's order alone) */
+ } PhotonCpuModule;
+ 
+ /* exported by photon_cpu.dll; returns its module table (static storage) or NULL to stay unloaded */

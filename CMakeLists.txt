@@ -1,0 +1,13 @@
+cmake_minimum_required(VERSION 3.20)
+project(Photon C ASM)
+set(CMAKE_C_STANDARD 11)
+add_compile_options(-Wall -Wextra -O2)
+add_subdirectory(tests/smoke)
+add_subdirectory(tests/d3d9tri)
+add_subdirectory(tests/vlgpixel)
+add_subdirectory(src/proxy_shaderapi)
+add_subdirectory(tests/proxyhost)
+add_subdirectory(src/shaderdll)
+add_subdirectory(tests/shaderhost)
+add_subdirectory(tools/d3dcompile)
+add_subdirectory(modules/cpu)   # Photon CPU (MODULES.md): owned by the CPU session

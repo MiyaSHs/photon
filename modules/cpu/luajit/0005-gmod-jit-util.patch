@@ -1,0 +1,26 @@
+diff -ruN lj5a/src/lib_jit.c lj5b/src/lib_jit.c
+--- a/src/lib_jit.c	2026-11-09 05:57:15.000000000 -0300
++++ b/src/lib_jit.c	2026-11-09 19:48:10.275872294 -0300
+@@ -759,6 +759,14 @@
+   lua_pushinteger(L, LUAJIT_VERSION_NUM);  /* Deprecated. */
+   lua_pushliteral(L, LUAJIT_VERSION);
+   LJ_LIB_REG(L, LUA_JITLIBNAME, jit);
++#if LUAJIT_GMOD_SYNTAX
++  /* GMod (2.1.0-beta3): jit.util is registered as a library (a field of jit, and in package.loaded) before jit.opt, which
++  ** gives jit's table its pairs() order; no jit.profile preload. */
++#ifndef LUAJIT_DISABLE_JITUTIL
++  LJ_LIB_REG(L, "jit.util", jit_util);
++  L->top--;
++#endif
++#else
+ #if LJ_HASPROFILE
+   lj_lib_prereg(L, LUA_JITLIBNAME ".profile", luaopen_jit_profile,
+ 		tabref(L->env));
+@@ -766,6 +774,7 @@
+ #ifndef LUAJIT_DISABLE_JITUTIL
+   lj_lib_prereg(L, LUA_JITLIBNAME ".util", luaopen_jit_util, tabref(L->env));
+ #endif
++#endif
+ #if LJ_HASJIT
+   LJ_LIB_REG(L, "jit.opt", jit_opt);
+ #endif

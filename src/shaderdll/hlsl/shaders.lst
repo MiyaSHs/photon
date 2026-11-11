@@ -1,0 +1,6 @@
+# scripts/build_shaders.sh input: one line per VCS file (one static combo, one dynamic combo each for now; combo
+# shaders are T3.3b).   <vcs name> <profile> <source in this dir> [entry, default main]
+photon_debug30_vs30 vs_3_0 photon_debug30_vs30.fxc main
+photon_debug30_ps30 ps_3_0 photon_debug30_ps30.fxc main
+photon_debug32_ps30 ps_3_0 photon_debug32_ps30.fxc main
+photon_debugvol_ps30 ps_3_0 photon_debugvol_ps30.fxc main

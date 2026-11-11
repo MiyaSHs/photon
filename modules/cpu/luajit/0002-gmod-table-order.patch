@@ -1,0 +1,80 @@
+diff -ruN a/src/lj_asm.c b/src/lj_asm.c
+--- a/src/lj_asm.c	2026-11-09 18:33:10.117804236 -0300
++++ b/src/lj_asm.c	2026-11-09 18:33:10.174416444 -0300
+@@ -1115,7 +1115,7 @@
+   uint32_t lo, hi;
+   UNUSED(as);
+   if (irt_isstr(ir->t)) {
+-    return ir_kstr(ir)->sid;
++    return ir_kstr(ir)->hash;  /* GMod: beta3 placement (lj_tab.h hashstr). */
+   } else if (irt_isnum(ir->t)) {
+     lo = ir_knum(ir)->u32.lo;
+     hi = ir_knum(ir)->u32.hi << 1;
+diff -ruN a/src/lj_asm_x86.h b/src/lj_asm_x86.h
+--- a/src/lj_asm_x86.h	2026-11-09 18:33:10.126804098 -0300
++++ b/src/lj_asm_x86.h	2026-11-09 18:33:10.174828996 -0300
+@@ -1274,7 +1274,7 @@
+       emit_gri(as, XG_ARITHi(XOg_AND), dest, (int32_t)khash);
+       emit_rmro(as, XO_MOV, dest, tab, offsetof(GCtab, hmask));
+     } else if (irt_isstr(kt)) {
+-      emit_rmro(as, XO_ARITH(XOg_AND), dest, key, offsetof(GCstr, sid));
++      emit_rmro(as, XO_ARITH(XOg_AND), dest, key, offsetof(GCstr, hash));  /* GMod: beta3 placement. */
+       emit_rmro(as, XO_MOV, dest, tab, offsetof(GCtab, hmask));
+     } else {  /* Must match with hashrot() in lj_tab.c. */
+       emit_rmro(as, XO_ARITH(XOg_AND), dest, tab, offsetof(GCtab, hmask));
+diff -ruN a/src/lj_str.c b/src/lj_str.c
+--- a/src/lj_str.c	2026-11-09 18:33:10.143803839 -0300
++++ b/src/lj_str.c	2026-11-09 18:33:10.175829170 -0300
+@@ -364,7 +364,8 @@
+ void LJ_FASTCALL lj_str_init(lua_State *L)
+ {
+   global_State *g = G(L);
+-  g->str.seed = lj_prng_u64(&g->prng);
++  g->str.seed = 0;  /* GMod: unseeded, so string hashes (and table order) equal LuaJIT 2.1.0-beta3's. */
++  (void)lj_prng_u64(&g->prng);
+   lj_str_resize(L, LJ_MIN_STRTAB-1);
+ }
+ 
+diff -ruN a/src/lj_tab.h b/src/lj_tab.h
+--- a/src/lj_tab.h	2026-11-09 18:33:10.108804373 -0300
++++ b/src/lj_tab.h	2026-11-09 18:33:10.174027934 -0300
+@@ -39,7 +39,8 @@
+ }
+ 
+ /* String IDs are generated when a string is interned. */
+-#define hashstr(t, s)		hashmask(t, (s)->sid)
++/* GMod: string keys placed by the string hash, as in LuaJIT 2.1.0-beta3, so pairs() order (and hook order) is GMod's. */
++#define hashstr(t, s)		hashmask(t, (s)->hash)
+ 
+ #define hashlohi(t, lo, hi)	hashmask((t), hashrot((lo), (hi)))
+ #define hashnum(t, o)		hashlohi((t), (o)->u32.lo, ((o)->u32.hi << 1))
+diff -ruN a/src/vm_x64.dasc b/src/vm_x64.dasc
+--- a/src/vm_x64.dasc	2026-11-09 18:33:10.135803961 -0300
++++ b/src/vm_x64.dasc	2026-11-09 18:33:10.175607845 -0300
+@@ -1287,7 +1287,7 @@
+   |  mov [BASE-16], TAB:RC		// Store metatable as default result.
+   |  mov STR:RC, [DISPATCH+DISPATCH_GL(gcroot)+8*(GCROOT_MMNAME+MM_metatable)]
+   |  mov RAd, TAB:RB->hmask
+-  |  and RAd, STR:RC->sid
++  |  and RAd, STR:RC->hash
+   |  settp STR:RC, LJ_TSTR
+   |  imul RAd, #NODE
+   |  add NODE:RA, TAB:RB->node
+@@ -3920,7 +3920,7 @@
+     |  checktab TAB:RB, ->vmeta_tgets
+     |->BC_TGETS_Z:	// RB = GCtab *, RC = GCstr *
+     |  mov TMPRd, TAB:RB->hmask
+-    |  and TMPRd, STR:RC->sid
++    |  and TMPRd, STR:RC->hash
+     |  imul TMPRd, #NODE
+     |  add NODE:TMPR, TAB:RB->node
+     |  settp ITYPE, STR:RC, LJ_TSTR
+@@ -4052,7 +4052,7 @@
+     |  checktab TAB:RB, ->vmeta_tsets
+     |->BC_TSETS_Z:	// RB = GCtab *, RC = GCstr *
+     |  mov TMPRd, TAB:RB->hmask
+-    |  and TMPRd, STR:RC->sid
++    |  and TMPRd, STR:RC->hash
+     |  imul TMPRd, #NODE
+     |  mov byte TAB:RB->nomm, 0		// Clear metamethod cache.
+     |  add NODE:TMPR, TAB:RB->node

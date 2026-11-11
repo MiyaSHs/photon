@@ -1,0 +1,15 @@
+# Cross toolchain: mingw-w64 GCC targeting x86_64 Windows (see src/README.md for why).
+set(CMAKE_SYSTEM_NAME Windows)
+set(CMAKE_SYSTEM_PROCESSOR x86_64)
+set(CMAKE_C_COMPILER x86_64-w64-mingw32-gcc)
+set(CMAKE_CXX_COMPILER x86_64-w64-mingw32-g++)
+set(CMAKE_RC_COMPILER x86_64-w64-mingw32-windres)
+set(CMAKE_ASM_COMPILER x86_64-w64-mingw32-gcc)
+set(CMAKE_FIND_ROOT_PATH /usr/x86_64-w64-mingw32)
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+# No runtime DLL dependencies besides system DLLs.
+set(CMAKE_C_FLAGS_INIT "-static-libgcc")
+set(CMAKE_SHARED_LINKER_FLAGS_INIT "-static-libgcc -Wl,--no-insert-timestamp")
+set(CMAKE_EXE_LINKER_FLAGS_INIT "-static-libgcc")

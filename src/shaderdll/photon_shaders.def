@@ -1,0 +1,3 @@
+LIBRARY photon_shaders
+EXPORTS
+    CreateInterface

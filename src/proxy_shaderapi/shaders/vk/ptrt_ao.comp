@@ -1,0 +1,68 @@
+#version 450
+// PT-RT (analysis/46 item 4): contact occlusion, after the temporal filter (Lumen: contact AO applied after the temporal filter, so it
+// never lags): the 8-unit voxels cannot see corners, gaps and the ground under small things, so the bounce light there is too bright.
+// Per half-size pixel, the depth around it is sampled along 8 fixed screen directions (4 steps each, out to RADIUS world units at the
+// pixel's own distance); a tap above the surface's tangent plane, within the radius, occludes (horizon-style, weighted by its angle and
+// fading with distance). No noise, so no history is needed. The result multiplies the filtered light in place (the composite's indirect
+// and lamps; the sun's direct is the composite's, shadowed by the sun maps). Same descriptor set as ptrt_trace.comp.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 1) uniform sampler2D sceneDepth;
+layout(std140, binding = 6) uniform View { vec4 inv[4]; vec4 prev[4]; vec4 cam; vec4 pcam; vec4 opt; vec4 opt2; } pc;
+layout(binding = 17, rgba16f) uniform image2D light;   // the filter's result (g_fa), changed in place
+layout(binding = 19) uniform sampler2D lamps;          // the lamps' own filtered light (ptrt.c's second chain), added first; black when off
+layout(push_constant) uniform P { float radius, strength, lamps_on; } pp;
+
+vec3 world_of(vec2 uv, float d) {
+    vec4 ndc = vec4(uv.x * 2 - 1, 1 - uv.y * 2, d, 1);
+    vec4 w = vec4(dot(ndc, pc.inv[0]), dot(ndc, pc.inv[1]), dot(ndc, pc.inv[2]), dot(ndc, pc.inv[3]));
+    return w.xyz / w.w;
+}
+
+float contact_ao(ivec2 px, vec2 uv);
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy), sz = imageSize(light);
+    if (px.x >= sz.x || px.y >= sz.y) return;
+    vec2 uv = (vec2(px) + 0.5) / vec2(sz);
+    // snapped to a texel centre of the full-size depth: this image's pixel centres fall exactly between two depth rows, where nearest
+    // sampling took either row by rounding, so the rebuilt point and its normal came from the other row: whole rows of the light lit wrong
+    // (the PBR test map's floor striped every ~6 pixels, strongest close by)
+    { vec2 fsz = vec2(textureSize(sceneDepth, 0)); uv = (floor(uv * fsz - 0.5) + 0.5) / fsz; }   // (the exact boundary - half a texel: robust)
+    vec4 c = imageLoad(light, px);
+    if (pp.lamps_on > 0.5) c.rgb += texelFetch(lamps, px, 0).rgb;
+    imageStore(light, px, vec4(c.rgb * contact_ao(px, uv), c.a));
+}
+float contact_ao(ivec2 px, vec2 uv) {
+    if (pp.radius <= 0.0) return 1.0;
+    vec2 fs = vec2(textureSize(sceneDepth, 0)), du = 1.0 / fs;
+    float d = textureLod(sceneDepth, uv, 0).r;
+    if (d >= 0.99999) return 1.0;
+    vec3 p = world_of(uv, d);
+    // the normal from 2-pixel differences, each axis taking the side nearer in depth (one-pixel steps on the 24-bit depth of a grazing
+    // floor striped the first version; the nearer side keeps edges from bending it)
+    vec2 ex = vec2(2.0 * du.x, 0), ey = vec2(0, 2.0 * du.y);
+    vec3 xa = world_of(uv + ex, textureLod(sceneDepth, uv + ex, 0).r) - p, xb = p - world_of(uv - ex, textureLod(sceneDepth, uv - ex, 0).r);
+    vec3 ya = world_of(uv + ey, textureLod(sceneDepth, uv + ey, 0).r) - p, yb = p - world_of(uv - ey, textureLod(sceneDepth, uv - ey, 0).r);
+    vec3 n = normalize(cross(dot(xa, xa) < dot(xb, xb) ? xa : xb, dot(ya, ya) < dot(yb, yb) ? ya : yb));
+    vec3 px1 = p + 0.5 * (dot(xa, xa) < dot(xb, xb) ? xa : xb);
+    if (dot(n, pc.cam.xyz - p) < 0) n = -n;
+    float pixw = max(length(px1 - p), 1e-3);         // world units per full-size pixel here
+    float rpx = min(pp.radius / pixw, 64.0);          // the radius on screen, capped (close up: 64 px)
+    if (rpx < 1.5) return 1.0;                        // far away: under two pixels, nothing to add
+    float occ = 0.0, cnt = 0.0;
+    for (int k = 0; k < 8; k++) {
+        float a = 0.7853982 * float(k) + 0.39;
+        vec2 dir = vec2(cos(a), sin(a));
+        for (int s = 1; s <= 4; s++) {
+            vec2 q = uv + dir * (rpx * float(s) / 4.0) * du;
+            if (any(lessThan(q, vec2(0))) || any(greaterThan(q, vec2(1)))) continue;
+            vec3 v = world_of(q, textureLod(sceneDepth, q, 0).r) - p;
+            float l = length(v);
+            cnt += 1.0;
+            // taps nearer than 2 units and nearly in the plane are the depth's own precision on a grazing floor (they striped it row
+            // by row): ignored; real occluders (props, walls) stand at steep angles
+            if (l < 2.0 || l > pp.radius) continue;
+            occ += max(dot(n, v) / l - 0.35, 0.0) * (1.0 - l / pp.radius);
+        }
+    }
+    return cnt > 0.0 ? clamp(1.0 - pp.strength * occ / cnt * 2.0, 0.25, 1.0) : 1.0;
+}

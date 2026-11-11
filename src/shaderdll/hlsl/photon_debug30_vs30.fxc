@@ -1,0 +1,13 @@
+// Photon_Debug30 vertex shader (T3.3, vs_3_0): object-space position -> clip space, nothing else.
+// cModelViewProj sits at c4..c7, as in Valve's common_vs_fxc.h (VERTEX_SHADER_MODELVIEWPROJ). Stock shaderapi sets
+// it for every VS: the stock g_bokehblur_vs30 and debugmorphaccumulator_vs30 disassemble to dp4 o0.x..w, r, c4..c7,
+// the same code this compiles to (scripts/build_shaders.sh prints both). Column-major float4x4 with mul(v, M), so
+// each register c4+i is one output component (the engine uploads the transposed matrix).
+const float4x4 cModelViewProj : register(c4);
+struct VS_OUTPUT { float4 pos : POSITION; };
+VS_OUTPUT main(float4 vPos : POSITION)
+{
+	VS_OUTPUT o;
+	o.pos = mul(float4(vPos.xyz, 1.0), cModelViewProj);
+	return o;
+}
